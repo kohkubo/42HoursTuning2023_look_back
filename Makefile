@@ -1,7 +1,6 @@
 include .env	# WEBHOOK_URL
 MYSQL_LOG := ./volume/mysql/log/slow.log
 
-
 .PHONY: init
 init	:
 	@echo "リモート環境からDBの内容をローカルに落としてくる"
@@ -40,13 +39,8 @@ bench	:
 	@cd ./benchmarker && bash run_k6_and_score.sh
 
 .PHONY: score
-score	: migrate bench
+score	: restore bench
 	@echo "リストア & マイグレーション & 負荷試験 & 採点"
-
-.PHONY: e2e
-e2e	:
-	@echo "e2e テスト"
-	cd ./benchmarker && bash e2e.sh
 
 .PHONY: deploy
 deploy:
@@ -56,4 +50,8 @@ deploy:
 .PHONY: log
 log:
 	@sudo cat $(MYSQL_LOG) | pt-query-digest > /tmp/pt-query-digest.txt
-	-@curl -X POST -F txt=@/tmp/pt-query-digest.txt $(WEBHOOK_URL) -s -o /dev/null
+	@curl -X POST -F txt=@/tmp/pt-query-digest.txt $(WEBHOOK_URL) -s -o /dev/null
+
+.PHONY: e2e
+e2e:
+	@cd ./benchmarker && bash e2e.sh
