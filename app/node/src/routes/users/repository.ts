@@ -26,86 +26,85 @@ export const getUsers = async (
   limit: number,
   offset: number
 ): Promise<User[]> => {
-  const query = `SELECT user_id, user_name, office_id, user_icon_id FROM user ORDER BY entry_date ASC, kana ASC LIMIT ? OFFSET ?`;
-  const rows: RowDataPacket[] = [];
+  const query = `
+    SELECT u.user_id, u.user_name, u.office_id, o.office_name, u.user_icon_id, f.file_name
+    FROM user AS u
+    LEFT JOIN office AS o ON u.office_id = o.office_id
+    LEFT JOIN file AS f ON u.user_icon_id = f.file_id
+    ORDER BY u.entry_date ASC, u.kana ASC
+    LIMIT ? OFFSET ?
+  `;
 
-  const [userRows] = await pool.query<RowDataPacket[]>(query, [limit, offset]);
-  for (const userRow of userRows) {
-    const [officeRows] = await pool.query<RowDataPacket[]>(
-      `SELECT office_name FROM office WHERE office_id = ?`,
-      [userRow.office_id]
-    );
-    const [fileRows] = await pool.query<RowDataPacket[]>(
-      `SELECT file_name FROM file WHERE file_id = ?`,
-      [userRow.user_icon_id]
-    );
-    userRow.office_name = officeRows[0].office_name;
-    userRow.file_name = fileRows[0].file_name;
-    rows.push(userRow);
-  }
+  const [rows] = await pool.query<RowDataPacket[]>(query, [limit, offset]);
 
   return convertToUsers(rows);
 };
 
+
 export const getUserByUserId = async (
   userId: string
 ): Promise<User | undefined> => {
-  const [user] = await pool.query<RowDataPacket[]>(
-    "SELECT user_id, user_name, office_id, user_icon_id FROM user WHERE user_id = ?",
-    [userId]
-  );
-  if (user.length === 0) {
+  const query = `
+    SELECT
+      u.user_id,
+      u.user_name,
+      o.office_name,
+      u.user_icon_id,
+      f.file_name
+    FROM user AS u
+    LEFT JOIN office AS o ON u.office_id = o.office_id
+    LEFT JOIN file AS f ON u.user_icon_id = f.file_id
+    WHERE u.user_id = ?
+  `;
+
+  const [rows] = await pool.query<RowDataPacket[]>(query, [userId]);
+
+  if (rows.length === 0) {
     return;
   }
 
-  const [office] = await pool.query<RowDataPacket[]>(
-    `SELECT office_name FROM office WHERE office_id = ?`,
-    [user[0].office_id]
-  );
-  const [file] = await pool.query<RowDataPacket[]>(
-    `SELECT file_name FROM file WHERE file_id = ?`,
-    [user[0].user_icon_id]
-  );
+  const { user_id, user_name, office_name, user_icon_id, file_name } = rows[0];
 
   return {
-    userId: user[0].user_id,
-    userName: user[0].user_name,
+    userId: user_id,
+    userName: user_name,
     userIcon: {
-      fileId: user[0].user_icon_id,
-      fileName: file[0].file_name,
+      fileId: user_icon_id,
+      fileName: file_name,
     },
-    officeName: office[0].office_name,
+    officeName: office_name,
   };
 };
+
 
 export const getUsersByUserIds = async (
   userIds: string[]
 ): Promise<SearchedUser[]> => {
-  let users: SearchedUser[] = [];
-  for (const userId of userIds) {
-    const [userRows] = await pool.query<RowDataPacket[]>(
-      "SELECT user_id, user_name, kana, entry_date, office_id, user_icon_id FROM user WHERE user_id = ?",
-      [userId]
-    );
-    if (userRows.length === 0) {
-      continue;
-    }
+  const placeholders = userIds.map(() => '?').join(',');
+  const query = `
+    SELECT
+      u.user_id,
+      u.user_name,
+      u.kana,
+      u.entry_date,
+      o.office_name,
+      f.file_name
+    FROM user AS u
+    LEFT JOIN office AS o ON u.office_id = o.office_id
+    LEFT JOIN file AS f ON u.user_icon_id = f.file_id
+    WHERE u.user_id IN (${placeholders})
+  `;
 
-    const [officeRows] = await pool.query<RowDataPacket[]>(
-      `SELECT office_name FROM office WHERE office_id = ?`,
-      [userRows[0].office_id]
-    );
-    const [fileRows] = await pool.query<RowDataPacket[]>(
-      `SELECT file_name FROM file WHERE file_id = ?`,
-      [userRows[0].user_icon_id]
-    );
-    userRows[0].office_name = officeRows[0].office_name;
-    userRows[0].file_name = fileRows[0].file_name;
+  const [rows] = await pool.query<RowDataPacket[]>(query, userIds);
 
-    users = users.concat(convertToSearchedUser(userRows));
+  const users: SearchedUser[] = [];
+  for (const row of rows) {
+    users.push(...convertToSearchedUser([row]));
   }
+
   return users;
 };
+
 
 export const getUsersByUserName = async (
   userName: string

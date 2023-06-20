@@ -6,20 +6,24 @@ import { convertDateToString } from "../../model/utils";
 export const getSessionByUserId = async (
   userId: string
 ): Promise<Session | undefined> => {
-  const [session] = await pool.query<RowDataPacket[]>(
-    "SELECT * FROM session WHERE linked_user_id = ?",
+  const [rows] = await pool.query<RowDataPacket[]>(
+    "SELECT session_id, linked_user_id, created_at FROM session WHERE linked_user_id = ?",
     [userId]
   );
-  if (session.length === 0) {
+
+  if (rows.length === 0) {
     return;
   }
 
+  const { session_id, linked_user_id, created_at } = rows[0];
+
   return {
-    sessionId: session[0].session_id,
-    userId: session[0].linked_user_id,
-    createdAt: convertDateToString(session[0].created_at),
+    sessionId: session_id,
+    userId: linked_user_id,
+    createdAt: convertDateToString(created_at),
   };
 };
+
 
 export const createSession = async (
   sessionId: string,
@@ -35,20 +39,24 @@ export const createSession = async (
 export const getSessionBySessionId = async (
   sessionId: string
 ): Promise<Session | undefined> => {
-  const [session] = await pool.query<RowDataPacket[]>(
-    "SELECT * FROM session WHERE session_id = ?",
+  const [rows] = await pool.query<RowDataPacket[]>(
+    "SELECT session_id, linked_user_id, created_at FROM session WHERE session_id = ?",
     [sessionId]
   );
-  if (session.length === 0) {
+
+  if (rows.length === 0) {
     return;
   }
 
+  const { session_id, linked_user_id, created_at } = rows[0];
+
   return {
-    sessionId: session[0].session_id,
-    userId: session[0].linked_user_id,
-    createdAt: convertDateToString(session[0].created_at),
+    sessionId: session_id,
+    userId: linked_user_id,
+    createdAt: convertDateToString(created_at),
   };
 };
+
 
 export const deleteSessions = async (userId: string) => {
   await pool.query("DELETE FROM session WHERE linked_user_id = ?", [userId]);

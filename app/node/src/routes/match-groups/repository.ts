@@ -1,37 +1,36 @@
 import { RowDataPacket } from "mysql2";
-import pool from "../../util/mysql";
+import NodeCache from 'node-cache';
 import { MatchGroup, MatchGroupDetail, User } from "../../model/types";
-import { getUsersByUserIds } from "../users/repository";
 import { convertToMatchGroupDetail } from "../../model/utils";
+import pool from "../../util/mysql";
+import { getUsersByUserIds } from "../users/repository";
+const myCache = new NodeCache({ stdTTL: 100, checkperiod: 120 });
 
 export const hasSkillNameRecord = async (
   skillName: string
 ): Promise<boolean> => {
-  const [rows] = await pool.query<RowDataPacket[]>(
-    "SELECT * FROM skill WHERE EXISTS (SELECT * FROM skill WHERE skill_name = ?)",
+  const [[result]] = await pool.query<RowDataPacket[]>(
+    "SELECT EXISTS(SELECT 1 FROM skill WHERE skill_name = ? LIMIT 1) as hasSkill",
     [skillName]
   );
-  return rows.length > 0;
+  return Boolean(result.hasSkill);
 };
+
 
 export const getUserIdsBeforeMatched = async (
   userId: string
 ): Promise<string[]> => {
-  const [matchGroupIdRows] = await pool.query<RowDataPacket[]>(
-    "SELECT match_group_id FROM match_group_member WHERE user_id = ?",
-    [userId]
-  );
-  if (matchGroupIdRows.length === 0) {
-    return [];
-  }
-
   const [userIdRows] = await pool.query<RowDataPacket[]>(
-    "SELECT user_id FROM match_group_member WHERE match_group_id IN (?)",
-    [matchGroupIdRows]
+    `SELECT m2.user_id
+     FROM match_group_member AS m1
+     JOIN match_group_member AS m2 ON m1.match_group_id = m2.match_group_id
+     WHERE m1.user_id = ? AND m2.user_id != ?`,
+    [userId, userId]
   );
 
   return userIdRows.map((row) => row.user_id);
 };
+
 
 export const insertMatchGroup = async (matchGroupDetail: MatchGroupDetail) => {
   await pool.query<RowDataPacket[]>(
@@ -46,72 +45,91 @@ export const insertMatchGroup = async (matchGroupDetail: MatchGroupDetail) => {
     ]
   );
 
-  for (const member of matchGroupDetail.members) {
-    await pool.query<RowDataPacket[]>(
+  const promises = matchGroupDetail.members.map(member =>
+    pool.query<RowDataPacket[]>(
       "INSERT INTO match_group_member (match_group_id, user_id) VALUES (?, ?)",
       [matchGroupDetail.matchGroupId, member.userId]
-    );
-  }
+    )
+  );
+
+  await Promise.all(promises);
 };
+
 
 export const getMatchGroupDetailByMatchGroupId = async (
   matchGroupId: string,
   status?: string
 ): Promise<MatchGroupDetail | undefined> => {
-  let query =
-    "SELECT match_group_id, match_group_name, description, status, created_by, created_at FROM match_group WHERE match_group_id = ?";
+
+  let matchGroupQuery =
+    "SELECT mg.match_group_id, mg.match_group_name, mg.description, mg.status, mg.created_by, mg.created_at, mgm.user_id \
+    FROM match_group as mg \
+    LEFT JOIN match_group_member as mgm ON mg.match_group_id = mgm.match_group_id \
+    WHERE mg.match_group_id = ?";
+
   if (status === "open") {
-    query += " AND status = 'open'";
+    matchGroupQuery += " AND mg.status = 'open'";
   }
-  const [matchGroup] = await pool.query<RowDataPacket[]>(query, [matchGroupId]);
-  if (matchGroup.length === 0) {
+
+  const [matchGroupRows] = await pool.query<RowDataPacket[]>(matchGroupQuery, [matchGroupId]);
+  if (matchGroupRows.length === 0) {
     return;
   }
 
-  const [matchGroupMemberIdRows] = await pool.query<RowDataPacket[]>(
-    "SELECT user_id FROM match_group_member WHERE match_group_id = ?",
-    [matchGroupId]
-  );
-  const matchGroupMemberIds: string[] = matchGroupMemberIdRows.map(
-    (row) => row.user_id
+  const matchGroupMemberIds: string[] = matchGroupRows.map(
+    (row: any) => row.user_id // if RowDataPacket doesn't have a user_id property, use 'any'
   );
 
-  const searchedUsers = await getUsersByUserIds(matchGroupMemberIds);
-  // SearchedUserからUser型に変換
-  const members: User[] = searchedUsers.map((searchedUser) => {
-    const { kana: _kana, entryDate: _entryDate, ...rest } = searchedUser;
-    return rest;
-  });
-  matchGroup[0].members = members;
+  const searchedUsers = await getUsersByUserIds(matchGroupMemberIds); // if getUsersByUserIds doesn't support an additional fields parameter, remove it
 
-  return convertToMatchGroupDetail(matchGroup[0]);
+  const members: User[] = searchedUsers;
+
+  // Assuming matchGroupRows[0] is of a type that can be added new properties to
+  const matchGroup = {...matchGroupRows[0], members: members};
+
+  return convertToMatchGroupDetail(matchGroup as RowDataPacket); // if matchGroup isn't already a RowDataPacket, cast it
 };
+
+
 
 export const getMatchGroupIdsByUserId = async (
   userId: string
 ): Promise<string[]> => {
+  const cacheKey = `matchGroupIds:${userId}`;
+
+  // Try to get result from cache
+  const cachedMatchGroupIds = myCache.get<string[]>(cacheKey);
+
+  if (cachedMatchGroupIds) {
+    return cachedMatchGroupIds;
+  }
+
   const [matchGroupIds] = await pool.query<RowDataPacket[]>(
     "SELECT match_group_id FROM match_group_member WHERE user_id = ?",
     [userId]
   );
-  return matchGroupIds.map((row) => row.match_group_id);
+
+  const result = matchGroupIds.map((row) => row.match_group_id);
+
+  // Store result in cache for future use
+  myCache.set(cacheKey, result);
+
+  return result;
 };
 
 export const getMatchGroupsByMatchGroupIds = async (
   matchGroupIds: string[],
   status: string
 ): Promise<MatchGroup[]> => {
-  let matchGroups: MatchGroup[] = [];
-  for (const matchGroupId of matchGroupIds) {
-    const matchGroupDetail = await getMatchGroupDetailByMatchGroupId(
-      matchGroupId,
-      status
-    );
-    if (matchGroupDetail) {
-      const { description: _description, ...matchGroup } = matchGroupDetail;
-      matchGroups = matchGroups.concat(matchGroup);
-    }
-  }
+  const fetchPromises = matchGroupIds.map(matchGroupId =>
+    getMatchGroupDetailByMatchGroupId(matchGroupId, status)
+  );
+
+  const matchGroupDetails = await Promise.all(fetchPromises);
+
+  const matchGroups = matchGroupDetails
+    .filter((matchGroupDetail): matchGroupDetail is MatchGroupDetail => matchGroupDetail !== undefined)
+    .map(({ description: _description, ...matchGroup }) => matchGroup);
 
   return matchGroups;
 };
